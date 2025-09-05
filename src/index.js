@@ -1,91 +1,61 @@
-import 'dotenv/config';
-import { Client, GatewayIntentBits, Partials, Collection } from 'discord.js';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { Client, GatewayIntentBits, Collection } from "discord.js";
+import dotenv from "dotenv";
+import { readdirSync } from "fs";
+import path from "path";
 
-const PREFIX = process.env.PREFIX || '!';
-const TOKEN = process.env.DISCORD_TOKEN;
-const GUILD_WHITELIST = (process.env.GUILD_WHITELIST || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-
-if (!TOKEN) {
-  console.error('Missing DISCORD_TOKEN in .env');
-  process.exit(1);
-}
+dotenv.config();
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates
-  ],
-  partials: [Partials.Channel],
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
+// Store commands in memory
 client.commands = new Collection();
 
-// Dynamic command loader
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-import fs from 'fs';
-const commandsPath = path.join(__dirname, 'commands');
-const walk = (dir) => {
-  for (const file of fs.readdirSync(dir)) {
-    const full = path.join(dir, file);
-    if (fs.lstatSync(full).isDirectory()) {
-      walk(full);
-    } else if (file.endsWith('.js')) {
-      const cmd = await import(full);
-      if (cmd.name && cmd.execute) client.commands.set(cmd.name, cmd);
+// Load all commands dynamically
+async function loadCommands() {
+  const commandsPath = path.resolve("./src/commands");
+  const commandFiles = readdirSync(commandsPath).filter(file => file.endsWith(".js"));
+
+  for (const file of commandFiles) {
+    const command = await import(`./commands/${file}`);
+    if (command.default?.name) {
+      client.commands.set(command.default.name, command.default);
+      console.log(`✅ Loaded command: ${command.default.name}`);
     }
   }
-};
-await walk(commandsPath);
+}
 
-// Simple in-memory music queues handled in src/music/player.js
-import { musicManager } from './music/player.js';
-client.musicManager = musicManager;
+client.once("ready", () => {
+  console.log(`🤖 Blaze is online as ${client.user.tag}`);
 
-client.once('ready', () => {
-  console.log(`🔥 Logged in as ${client.user.tag}`);
-
-  function updatePresence() {
-    const count = client.guilds.cache.size;
-    client.user.setPresence({
-      activities: [{ name: `in ${count} servers | !help`, type: 0 }], // Playing
-      status: 'online'
-    });
-  }
-
-  updatePresence();
-  client.on('guildCreate', updatePresence);
-  client.on('guildDelete', updatePresence);
+  client.user.setPresence({
+    activities: [{ name: `in ${client.guilds.cache.size} servers`, type: 0 }],
+    status: "online"
+  });
 });
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (!message.content.startsWith(PREFIX)) return;
+client.on("messageCreate", async (message) => {
+  if (!message.content.startsWith("!") || message.author.bot) return;
 
-  if (GUILD_WHITELIST.length && !GUILD_WHITELIST.includes(message.guild?.id)) {
-    return; // Ignore messages from non-whitelisted guilds
-  }
-
-  const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
-  const commandName = args.shift()?.toLowerCase();
-  if (!commandName) return;
-
+  const args = message.content.slice(1).trim().split(/ +/);
+  const commandName = args.shift().toLowerCase();
   const command = client.commands.get(commandName);
+
   if (!command) return;
 
   try {
-    await command.execute(message, args, client);
-  } catch (err) {
-    console.error(err);
-    await message.reply('⚠️ There was an error executing that command.');
+    await command.execute(message, args);
+  } catch (error) {
+    console.error(error);
+    message.reply("❌ There was an error executing that command!");
   }
 });
 
-client.login(TOKEN);
+await loadCommands(); // load commands before login
+client.login(process.env.TOKEN);
